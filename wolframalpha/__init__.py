@@ -1,15 +1,13 @@
 import itertools
 import json
-import getpass
-import os
 import urllib.parse
 import urllib.request
+import aiohttp
 import contextlib
 import collections
 from typing import Dict, Any, Callable, Tuple
 
 import xmltodict
-from jaraco.context import suppress
 from more_itertools import always_iterable
 
 
@@ -26,92 +24,16 @@ def xml_bool(str_val):
 class Client:
     """
     Wolfram|Alpha v2.0 client
-
-    Basic usage is pretty simple. Get your App ID at
-    https://products.wolframalpha.com/api/.
-    Create the client with your App ID:
-
-    >>> app_id = getfixture('API_key')
-    >>> client = Client(app_id)
-
-    Send a query, which returns Results objects:
-
-    >>> res = client.query('temperature in Washington, DC on October 3, 2012')
-
-    Result objects have `pods` (a Pod is an answer group from Wolfram Alpha):
-
-    >>> for pod in res.pods:
-    ...     pass  # do_something_with(pod)
-
-    Pod objects have ``subpods`` (a Subpod is a specific response
-    with the plaintext reply and some additional info):
-
-    >>> for pod in res.pods:
-    ...     for sub in pod.subpods:
-    ...         print(sub.plaintext)
-    temperature | Washington, District of Columbia
-    Wednesday, October 3, 2012
-    (70 to 81) °F (average: 75 °F)
-    ...
-
-    To query simply for the pods that have 'Result' titles or are
-    marked as 'primary' using ``Result.results``:
-
-    >>> print(next(res.results).text)
-    (70 to 81) °F (average: 75 °F)
-    (Wednesday, October 3, 2012)
-
-    All objects returned are dictionary subclasses, so to find out which attributes
-    Wolfram|Alpha has supplied, simply invoke ``.keys()`` on the object.
-    Attributes formed from XML attributes can be accessed with or without their
-    "@" prefix (added by xmltodict).
-
     """
 
     def __init__(self, app_id):
         self.app_id = app_id
 
-    @classmethod
-    def from_env(cls):
-        """
-        Create a client with a key discovered from the keyring
-        or environment variable. Raises an exception if no key
-        is found.
-        """
-        return cls(cls._from_keyring() or cls._from_env())
-
-    @staticmethod
-    @suppress(Exception)
-    def _from_keyring():
-        import keyring
-
-        return keyring.get_password('https://api.wolframalpha.com/', getpass.getuser())
-
-    @staticmethod
-    def _from_env():
-        return os.environ['WOLFRAMALPHA_API_KEY']
-
-    def query(self, input, params=(), **kwargs):
+    async def query(self, input, params=(), **kwargs):
         """
         Query Wolfram|Alpha using the v2.0 API
 
-        Allows for arbitrary parameters to be passed in
-        the query. For example, to pass assumptions:
-
-        >>> client = Client(getfixture('API_key'))
-        >>> res = client.query(input='pi', assumption='*C.pi-_*NamedConstant-')
-
-        To pass multiple assumptions, pass multiple items
-        as params:
-
-        >>> params = (
-        ...     ('assumption', '*C.pi-_*NamedConstant-'),
-        ...     ('assumption', 'DateOrder_**Day.Month.Year--'),
-        ... )
-        >>> res = client.query(input='pi', params=params)
-
-        For more details on Assumptions, see
-        https://products.wolframalpha.com/api/documentation.html#6
+        This function is now asynchronous.
         """
         data = dict(
             input=input,
@@ -121,11 +43,18 @@ class Client:
 
         query = urllib.parse.urlencode(tuple(data))
         url = 'https://api.wolframalpha.com/v2/query?' + query
-        resp = urllib.request.urlopen(url)
-        assert resp.headers.get_content_type() == 'text/xml'
-        assert resp.headers.get_param('charset') == 'utf-8'
-        doc = xmltodict.parse(resp, postprocessor=Document.make)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                assert resp.content_type == 'text/xml'
+                assert resp.charset == 'utf-8'
+                text = await resp.text()
+                doc = xmltodict.parse(text, postprocessor=Document.make)
         return doc['queryresult']
+
+# Example usage:
+# 
+# asyncio.run(client.query('temperature in Washington, DC on October 3, 2012'))
 
 
 class ErrorHandler:
@@ -284,3 +213,4 @@ class Result(ErrorHandler, Document):
         A simplified set of answer text by title.
         """
         return {pod.title: pod.text for pod in self.pods}
+
